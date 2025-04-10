@@ -2,9 +2,15 @@ python -m venv .\3.10venv
 .\3.10venv\Scripts\Activate
 python -m pip install --upgrade pip (only once)
 pip install -r requirements.txt
- python training_aerial_imagery.py
- python 229_prediction_aerial_imagery_using_smooth_blending.py
- 
+ python training_aerial_imagery.py (optional)
+ python 229_prediction_aerial_imagery_using_smooth_blending.py  (to 1st check)
+ streamlit run app.py  
+
+
+pip install efficientnet==1.1.1(if err)
+
+
+
 pip install -r requirements.txt
 pip install efficientnet==1.1.1(if err)
 python training_aerial_imagery.py
