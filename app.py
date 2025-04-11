@@ -10,6 +10,7 @@ from smooth_tiled_predictions import predict_img_with_smooth_windowing
 from simple_multi_unet_model import jacard_coef
 from skimage.measure import label as sk_label, regionprops
 from patchify import patchify, unpatchify
+from streamlit_drawable_canvas import st_canvas
 
 # ------------------------
 # Settings
@@ -17,7 +18,7 @@ from patchify import patchify, unpatchify
 MODEL_PATH = "models/best_custom_unet_model.h5"
 PATCH_SIZE = 256
 N_CLASSES = 6
-CONVERSION_FACTOR = 0.25  # e.g., 1 pixel corresponds to 0.25 square meters
+CONVERSION_FACTOR = 0.25  # 1 pixel = 0.25 square meters
 
 LABEL_MAPPING = {
     0: "Building",
@@ -29,18 +30,17 @@ LABEL_MAPPING = {
 }
 
 COLORS = {
-    0: (60, 16, 152),    # Building: Dark blue/purple
-    1: (132, 41, 246),   # Land: Purple
-    2: (110, 193, 228),  # Road: Light blue
-    3: (254, 221, 58),   # Vegetation: Yellow
-    4: (226, 169, 41),   # Water: Orange
-    5: (155, 155, 155)   # Unlabeled: Gray
+    0: (60, 16, 152),
+    1: (132, 41, 246),
+    2: (110, 193, 228),
+    3: (254, 221, 58),
+    4: (226, 169, 41),
+    5: (155, 155, 155)
 }
 
 scaler = MinMaxScaler()
 
 def label_to_rgb(predicted_image):
-    """Convert a 2D label image into an RGB image using the defined COLORS."""
     h, w = predicted_image.shape
     segmented_img = np.zeros((h, w, 3), dtype=np.uint8)
     for lbl, (r, g, b) in COLORS.items():
@@ -48,21 +48,18 @@ def label_to_rgb(predicted_image):
     return segmented_img
 
 def generate_binary_mask(segmentation, target_label):
-    """Generate a binary mask (0 or 255) for the given target label."""
     return (segmentation == target_label).astype(np.uint8) * 255
 
 def postprocess_mask(mask, label_id):
-    """Apply post-processing to mask based on label type."""
-    if label_id == 0:  # Buildings - merge nearby regions
+    if label_id == 0:  # Buildings
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (10, 10))
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
-    elif label_id == 4:  # Water - remove small noise
+    elif label_id == 4:  # Water
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
     return mask
 
 def patchwise_prediction(img, model):
-    """Perform patch‑wise (non‑overlapping) inference."""
     SIZE_X = (img.shape[1] // PATCH_SIZE) * PATCH_SIZE
     SIZE_Y = (img.shape[0] // PATCH_SIZE) * PATCH_SIZE
     large_img = Image.fromarray(img).crop((0, 0, SIZE_X, SIZE_Y))
@@ -83,7 +80,6 @@ def patchwise_prediction(img, model):
     return unpatchify(patched_prediction, (large_img.shape[0], large_img.shape[1]))
 
 def smooth_prediction(img, model):
-    """Perform smooth tiling inference."""
     img_scaled = scaler.fit_transform(img.reshape(-1, 3)).reshape(img.shape)
     preds = predict_img_with_smooth_windowing(
         img_scaled,
@@ -96,7 +92,7 @@ def smooth_prediction(img, model):
 
 def main():
     st.set_page_config(layout="wide")
-    st.title("Semantic Segmentation with Smooth Tiling and Area Computation")
+    st.title("Semantic Segmentation with Dual Analysis Modes")
 
     @st.cache(allow_output_mutation=True)
     def load_segmentation_model():
@@ -138,61 +134,101 @@ def main():
         with col2:
             st.image(st.session_state['smooth_rgb'], caption="Smooth Tiling Prediction", width=300)
 
-        st.subheader("Object Selection and Area Calculation")
-        smooth_pred = st.session_state['smooth_pred']
-        unique_labels = np.unique(smooth_pred)
-        label_options = [f"{i}: {LABEL_MAPPING[i]}" for i in unique_labels]
-        selected_labels = st.multiselect("Select Classes for Analysis", options=label_options)
-        selected_ids = [int(s.split(":")[0]) for s in selected_labels if s.strip()]
+        analysis_mode = st.radio("Select Analysis Mode:", 
+                               ["Binary Mask Analysis", "Interactive Area Selection"])
 
-        if st.button("Process Selected Classes"):
-            processing_results = {}
-            for label_id in selected_ids:
-                mask = generate_binary_mask(smooth_pred, label_id)
-                mask = postprocess_mask(mask, label_id)
-                labeled = sk_label(mask)
-                regions = regionprops(labeled)
-                processing_results[label_id] = {
-                    'mask': mask,
-                    'regions': regions
-                }
-            st.session_state['processing_results'] = processing_results
+        if analysis_mode == "Binary Mask Analysis":
+            st.subheader("Binary Mask Analysis")
+            smooth_pred = st.session_state['smooth_pred']
+            unique_labels = np.unique(smooth_pred)
+            label_options = [f"{i}: {LABEL_MAPPING[i]}" for i in unique_labels]
+            selected_labels = st.multiselect("Select Classes for Binary Masks", options=label_options)
+            selected_ids = [int(s.split(":")[0]) for s in selected_labels if s.strip()]
 
-        if 'processing_results' in st.session_state:
-            processing_results = st.session_state['processing_results']
-            for label_id in selected_ids:
-                if label_id not in processing_results:
-                    continue
-                class_info = processing_results[label_id]
-                regions = class_info['regions']
-                class_name = LABEL_MAPPING.get(label_id, f"Label {label_id}")
-                
-                st.markdown(f"**{class_name} Analysis**")
-                if not regions:
-                    st.write(f"No objects detected for {class_name}")
-                    continue
-                
-                region_options = {
-                    f"Object {i+1} (Area: {reg.area * CONVERSION_FACTOR:.2f} units²)": reg
-                    for i, reg in enumerate(regions)
-                }
-                selected_obj = st.selectbox(
-                    f"Select {class_name} Object",
-                    options=list(region_options.keys()),
-                    key=f"obj_select_{label_id}"
-                )
-                chosen_region = region_options[selected_obj]
-                
-                # Display area information
-                st.write(f"**Selected Area:** {chosen_region.area * CONVERSION_FACTOR:.2f} square units")
-                
-                # Visualize selected object
-                mask = class_info['mask']
-                highlighted = np.zeros_like(st.session_state['smooth_rgb'])
-                highlighted[mask == 255] = st.session_state['smooth_rgb'][mask == 255]
-                bbox = chosen_region.bbox
-                cv2.rectangle(highlighted, (bbox[1], bbox[0]), (bbox[3], bbox[2]), (255, 0, 0), 2)
-                st.image(highlighted, caption=f"Selected {class_name} Object", width=400)
+            if st.button("Generate Binary Masks"):
+                for label_id in selected_ids:
+                    mask = generate_binary_mask(smooth_pred, label_id)
+                    mask = postprocess_mask(mask, label_id)
+                    total_pixels = np.sum(mask == 255)
+                    real_area = total_pixels * CONVERSION_FACTOR
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.image(mask, caption=f"{LABEL_MAPPING[label_id]} Binary Mask", use_column_width=True)
+                    with col2:
+                        st.markdown(f"{LABEL_MAPPING[label_id]} Total Area")
+                        st.markdown(f"- Total Pixels: {total_pixels}")
+                        st.markdown(f"- Real Area: {real_area:.2f} square units")
+
+        elif analysis_mode == "Interactive Area Selection":
+            st.subheader("Interactive Area Selection")
+            smooth_pred = st.session_state['smooth_pred']
+            smooth_rgb = st.session_state['smooth_rgb']
+            original_height, original_width = smooth_rgb.shape[:2]
+
+            # Dynamic canvas sizing with max height
+            max_canvas_height = 600
+            canvas_width_desired = 600
+            canvas_height_desired = (original_height * canvas_width_desired) // original_width
+
+            if canvas_height_desired > max_canvas_height:
+                scale_factor = original_height / max_canvas_height
+                canvas_width = int(original_width / scale_factor)
+                canvas_height = max_canvas_height
+            else:
+                canvas_width = canvas_width_desired
+                canvas_height = canvas_height_desired
+
+            # Scale factors for mapping
+            scale_factor_x = original_width / canvas_width
+            scale_factor_y = original_height / canvas_height
+
+            st.markdown("*Draw a region on the image:*")
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 165, 0, 0.3)",
+                stroke_width=2,
+                stroke_color="rgb(255, 0, 0)",
+                background_image=Image.fromarray(smooth_rgb),
+                height=canvas_height,
+                width=canvas_width,
+                drawing_mode="rect",
+                key="canvas",
+                display_toolbar=True
+            )
+
+            st.markdown("---")  # Optional: separator line
+
+            unique_labels = np.unique(smooth_pred)
+            label_options = [f"{i}: {LABEL_MAPPING[i]}" for i in unique_labels]
+            selected_class = st.selectbox("Select class for area calculation", label_options)
+            label_id = int(selected_class.split(":")[0])
+
+
+            if canvas_result.json_data is not None:
+                    objects = canvas_result.json_data["objects"]
+                    if len(objects) > 0:
+                        rect = objects[-1]
+                        x = rect["left"] * scale_factor_x
+                        y = rect["top"] * scale_factor_y
+                        w = rect["width"] * scale_factor_x
+                        h = rect["height"] * scale_factor_y
+
+                        mask = generate_binary_mask(smooth_pred, label_id)
+                        mask = postprocess_mask(mask, label_id)
+
+                        x, y, w, h = int(x), int(y), int(w), int(h)
+                        cropped_mask = mask[y:y+h, x:x+w]
+
+                        total_pixels = np.sum(cropped_mask == 255)
+                        real_area = total_pixels * CONVERSION_FACTOR
+
+                        visualization = smooth_rgb.copy()
+                        cv2.rectangle(visualization, (x, y), (x + w, y + h), (255, 0, 0), 3)
+
+                        st.image(visualization, caption="Selected Region", use_column_width=True)
+                        st.markdown(f"{LABEL_MAPPING[label_id]} Area in Selection:")
+                        st.markdown(f"- Total Pixels: {total_pixels}")
+                        st.markdown(f"- Real Area: {real_area:.2f} square units")
 
 if __name__ == "__main__":
     main()
