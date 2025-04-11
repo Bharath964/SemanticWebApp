@@ -24,7 +24,6 @@ Pipfile.lock
 poetry.lock
 
 # Models and Checkpoints
-models/
 checkpoints/
 
 # Datasets
